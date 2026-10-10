@@ -1484,15 +1484,18 @@ test("cmdAdd stores null (not evaluated defaults) for runtime controls when flag
   });
 });
 
-test("cmdAdd allows --max-output-bytes 0 but rejects --kill-grace-ms 0", async () => {
+test("cmdAdd allows disabled runtime caps but rejects --kill-grace-ms 0", async () => {
   await withTempDir(async (dir) => {
     const env = setupEnv({ dataDir: dir, plistDir: join(dir, "agents") });
     try {
       await withEnv(env, () => cmdAdd([
         "x", "--prompt", "p", "--cwd", "/tmp",
-        "--kind", "daily", "--time", "09:00", "--max-output-bytes", "0",
+        "--kind", "daily", "--time", "09:00",
+        "--timeout-ms", "0", "--idle-timeout-ms", "0", "--max-output-bytes", "0",
       ], { stdout: process.stdout as any, stderr: process.stderr as any }));
       const cat = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8"));
+      assert.equal(cat.jobs[0].timeoutMs, 0);
+      assert.equal(cat.jobs[0].idleTimeoutMs, 0);
       assert.equal(cat.jobs[0].maxOutputBytes, 0);
       await assert.rejects(
         () => withEnv(env, () => cmdAdd([

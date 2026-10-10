@@ -16,7 +16,7 @@
  * for launchd/cron, which invoke pi-tick as a subprocess on their own schedule.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { dirname, join } from "node:path";
@@ -39,6 +39,7 @@ import { createTick, scheduleOptsFromScheduleValue } from "./bin/commands/add.mj
 // import closure needs installed alongside it. Derived by walking bin/, not
 // hand-listed — see bundle.mjs for why (issue #60).
 import { listBundleFiles, bundledPath, installedPath } from "./bundle.mjs";
+import { pickRecentRun } from "./recent-run-picker.ts";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -173,7 +174,7 @@ async function ensureLogsDir(): Promise<void> {
 // ─── Slash commands ──────────────────────────────────────────────────────
 
 // Top-level subcommands under /tick. Used for completions and dispatch.
-const TICK_SUBCOMMANDS = ["list", "run", "kill", "enable", "disable", "delete", "log", "show"] as const;
+const TICK_SUBCOMMANDS = ["list", "run", "kill", "enable", "disable", "delete", "log", "show", "recent"] as const;
 type TickSubcommand = (typeof TICK_SUBCOMMANDS)[number];
 
 function parseTickArgs(raw: string): { sub: TickSubcommand | null; rest: string[] } {
@@ -196,6 +197,21 @@ async function getJobIds(pi: ExtensionAPI): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+async function openRecentRuns(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify("Recent-run picker requires TUI mode; use /tick log instead", "info");
+    return;
+  }
+  const run = await pickRecentRun(ctx);
+  if (!run) return;
+  const res = await runCli(pi, ["show", run.jobId, "--run-id", run.runId]);
+  if (res.code !== 0) {
+    ctx.ui.notify(`pi-tick show failed: ${res.stderr.trim() || `exit ${res.code}`}`, "error");
+    return;
+  }
+  ctx.ui.notify(res.stdout.trim() || "(no output)", "info");
 }
 
 let initPromise: Promise<void> | null = null;
@@ -226,7 +242,7 @@ export default function (pi: ExtensionAPI): void {
 
   // ── Slash command: /tick <subcommand> [args] ────────────────────────────
   pi.registerCommand("tick", {
-    description: "Manage scheduled agent tasks: list, run <id>, kill <id>, enable <id>, disable <id>, delete <id>",
+    description: "Manage scheduled tasks; run without arguments to browse recent runs",
     getArgumentCompletions: async (prefix) => {
       // /tick <prefix>
       const args = parseTickArgs(prefix);
@@ -238,7 +254,7 @@ export default function (pi: ExtensionAPI): void {
           : null;
       }
       // Subcommand given — complete based on its shape.
-      if (args.sub === "list") return [];
+      if (args.sub === "list" || args.sub === "recent") return [];
       // run/delete/log/show <id>
       const ids = await getJobIds(pi);
       const lastToken = args.rest[args.rest.length - 1] ?? "";
@@ -251,7 +267,7 @@ export default function (pi: ExtensionAPI): void {
       const parsed = parseTickArgs(args);
       if (parsed.sub === null) {
         if (args.trim() === "") {
-          ctx.ui.notify("Usage: /tick <list|run <id>|kill <id>|enable <id>|disable <id>|delete <id>|log [id]|show <id>>", "info");
+          await openRecentRuns(pi, ctx);
           return;
         }
         ctx.ui.notify(`pi-tick: unknown subcommand: ${parsed.rest[0] ?? ""}`, "error");
@@ -338,8 +354,8 @@ export default function (pi: ExtensionAPI): void {
         ctx.ui.notify(res.stdout.trim() || `deleted job '${id}'`, "info");
         return;
       }
-      if (parsed.sub === "show" && !parsed.rest[0]) {
-        ctx.ui.notify("Usage: /tick show <jobId> [--run-id <runId>|--run N] [--tail N]\nExample: /tick log\nExample: /tick show model-check-1\nExample: /tick show model-check-1 --run-id 4d7c8aef", "info");
+      if (parsed.sub === "recent" || (parsed.sub === "show" && !parsed.rest[0])) {
+        await openRecentRuns(pi, ctx);
         return;
       }
       if (parsed.sub === "log" || parsed.sub === "show") {
@@ -380,7 +396,7 @@ export default function (pi: ExtensionAPI): void {
       }),
       enabled: Type.Optional(Type.Boolean({ description: "If true, register launchd plist in the same call" })),
       model: Type.Optional(Type.String({ description: "Optional model id (passed to pi as --model)" })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Wall-clock timeout in ms; SIGTERM then SIGKILL after killGraceMs. Default 30m." })),
+      timeoutMs: Type.Optional(Type.Number({ description: "Wall-clock timeout in ms; SIGTERM then SIGKILL after killGraceMs. 0 = disabled. Default 0." })),
       idleTimeoutMs: Type.Optional(Type.Number({ description: "No-stdout/no-stderr cap in ms; SIGTERM when reached. 0 = disabled. Default 0." })),
       maxOutputBytes: Type.Optional(Type.Number({ description: "Transcript cap in bytes; child is killed when exceeded. 0 = disabled. Default 0." })),
       killGraceMs: Type.Optional(Type.Number({ description: "Delay between SIGTERM and SIGKILL in ms. Default 5_000." })),

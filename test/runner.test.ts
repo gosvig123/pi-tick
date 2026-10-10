@@ -89,6 +89,21 @@ test("runJob falls back to its own defaults when runtime-control fields are expl
   assert.equal(res.reason, "exit_code");
 });
 
+test("runJob treats timeoutMs 0 as disabled", async () => {
+  let child;
+  const res = await runJob({ ...defaultJob, timeoutMs: 0 }, "external", {
+    ...getDefaultOptions(),
+    spawnFn: () => {
+      child = createMockChild();
+      setTimeout(() => child.emit("close", 0, null), 10);
+      return child;
+    },
+  });
+  assert.equal(res.exitCode, 0);
+  assert.equal(res.reason, "exit_code");
+  assert.equal(child.killedWith, undefined);
+});
+
 test("runJob - spawn_error", async () => {
   let child;
   const res = await runJob(defaultJob, "external", {

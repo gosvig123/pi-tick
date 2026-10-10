@@ -221,7 +221,7 @@ test("writeAtomic is safe under concurrent writers", async () => {
 // one place either module reads; this pins the contract both depend on.
 test("RUNTIME_DEFAULTS holds the documented defaults for all four runtime controls", () => {
   assert.deepEqual(RUNTIME_DEFAULTS, {
-    timeoutMs: 30 * 60 * 1000,
+    timeoutMs: 0,
     idleTimeoutMs: 0,
     maxOutputBytes: 0,
     killGraceMs: 5000,

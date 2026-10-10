@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- New jobs now match ordinary Pi sessions by default: wall-clock, no-output
+  idle, and transcript-size limits are disabled unless a job opts in.
+  `--timeout-ms 0` explicitly disables the wall-clock timer. Existing jobs
+  retain any explicit stored limits until changed.
+
 ## [0.1.2] - 2026-07-22
 
 ### Changed

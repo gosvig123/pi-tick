@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withTempDir, setupEnv, withEnv, teardownEnv } from "./_helpers.ts";
 import { join, dirname } from "node:path";
-import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import {
@@ -76,11 +76,29 @@ async function loadExtension() {
   return import(`${pathToFileURL(extPath).href}?t=${Date.now()}-${Math.random()}`);
 }
 
-function makeCtx() {
+const fakeTheme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+
+function makeCtx(options: { mode?: string; input?: string } = {}) {
   const notifies: Array<{ msg: string; level: string }> = [];
+  let customCalls = 0;
+  const custom = async (factory: (...args: any[]) => any) => {
+    customCalls++;
+    let result: unknown = null;
+    const done = (value: unknown) => { result = value; };
+    const component = factory({ requestRender() {} }, fakeTheme, {}, done);
+    component.handleInput(options.input === "escape" ? "\x1b" : "\r");
+    return result;
+  };
   return {
     notifies,
-    ctx: { ui: { notify: (msg: string, level: string) => notifies.push({ msg, level }) } },
+    get customCalls() { return customCalls; },
+    ctx: {
+      mode: options.mode ?? "tui",
+      ui: { custom, notify: (msg: string, level: string) => notifies.push({ msg, level }) },
+    },
   };
 }
 
@@ -141,6 +159,20 @@ async function withCatalog(
 function readCatalog(dataDir: string): { version: number; jobs: any[] } {
   const p = join(dataDir, "jobs.json");
   return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : { version: 1, jobs: [] };
+}
+
+function writeRun(dataDir: string, jobId: string, runId: string, startedAt: string, finalText: string) {
+  const runDir = join(dataDir, "runs", jobId);
+  mkdirSync(runDir, { recursive: true });
+  const safeTime = startedAt.replace(/[:.]/g, "-");
+  const transcriptPath = join(runDir, `${safeTime}_${runId}.jsonl`);
+  const event = { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalText }] } };
+  writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
+  const record = {
+    runId, jobId, startedAt, finishedAt: startedAt, exitCode: 0,
+    transcriptPath, finalTextPreview: finalText,
+  };
+  appendFileSync(join(dataDir, "runs.jsonl"), `${JSON.stringify(record)}\n`, "utf8");
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -471,16 +503,64 @@ test("extension: /tick show reports no transcripts for a fresh job", async () =>
   });
 });
 
-test("extension: /tick show without job shows examples", async () => {
-  const ext = await loadExtension();
-  const fake = makeFakePi();
-  ext.default(fake as any);
-  const cmd = fake.commands.get("tick")!;
-  const { ctx, notifies } = makeCtx();
-  await cmd.handler!("show", ctx);
-  assert.equal(fake.calls.length, 0);
-  assert.match(notifies[0].msg, /Usage: \/tick show <jobId>/);
-  assert.match(notifies[0].msg, /Example: \/tick show model-check-1/);
+test("extension: /tick show without job reports when no viewable runs exist", async () => {
+  await withCatalog([], async () => {
+    const ext = await loadExtension();
+    const fake = makeFakePi();
+    ext.default(fake as any);
+    const cmd = fake.commands.get("tick")!;
+    const view = makeCtx();
+    await cmd.handler!("show", view.ctx);
+    assert.equal(view.customCalls, 0);
+    assert.match(view.notifies[0].msg, /no viewable tick runs/);
+  });
+});
+
+test("extension: recent picker skips audit records whose transcript expired", async () => {
+  await withCatalog([makeJob({ id: "j1" })], async (_env, dataDir) => {
+    const expired = {
+      runId: "deadbeef", jobId: "j1", startedAt: "2026-01-01T01:00:00.000Z",
+      exitCode: 0, transcriptPath: join(dataDir, "runs", "j1", "missing.jsonl"),
+    };
+    writeFileSync(join(dataDir, "runs.jsonl"), `${JSON.stringify(expired)}\n`, "utf8");
+    const ext = await loadExtension();
+    const fake = makeFakePi();
+    ext.default(fake as any);
+    const view = makeCtx();
+    await fake.commands.get("tick")!.handler!("recent", view.ctx);
+    assert.equal(view.customCalls, 0);
+    assert.match(view.notifies[0].msg, /no viewable tick runs/);
+  });
+});
+
+test("extension: bare /tick picker opens the newest selected run", async () => {
+  await withCatalog([makeJob({ id: "j1" })], async (_env, dataDir) => {
+    writeRun(dataDir, "j1", "22222222", "2026-01-01T02:00:00.000Z", "newest result");
+    writeRun(dataDir, "j1", "11111111", "2026-01-01T01:00:00.000Z", "older result");
+    const ext = await loadExtension();
+    const fake = makeFakePi();
+    ext.default(fake as any);
+    const cmd = fake.commands.get("tick")!;
+    const view = makeCtx();
+    await cmd.handler!("", view.ctx);
+    assert.equal(view.customCalls, 1);
+    assert.ok(view.notifies.some((n) => /newest result/.test(n.msg)));
+    assert.ok(view.notifies.every((n) => !/older result/.test(n.msg)));
+  });
+});
+
+test("extension: recent picker cancellation leaves transcript closed", async () => {
+  await withCatalog([makeJob({ id: "j1" })], async (_env, dataDir) => {
+    writeRun(dataDir, "j1", "11111111", "2026-01-01T01:00:00.000Z", "hidden result");
+    const ext = await loadExtension();
+    const fake = makeFakePi();
+    ext.default(fake as any);
+    const cmd = fake.commands.get("tick")!;
+    const view = makeCtx({ input: "escape" });
+    await cmd.handler!("recent", view.ctx);
+    assert.equal(view.customCalls, 1);
+    assert.deepEqual(view.notifies, []);
+  });
 });
 
 test("extension: /tick log reports no runs for a fresh job", async () => {
@@ -513,6 +593,7 @@ test("extension: getArgumentCompletions returns subcommands for empty prefix", a
   assert.ok(values.includes("delete"));
   assert.ok(values.includes("log"));
   assert.ok(values.includes("show"));
+  assert.ok(values.includes("recent"));
 });
 
 test("extension: getArgumentCompletions for /tick run <id> returns job ids from catalog", async () => {
@@ -549,15 +630,15 @@ test("extension: getArgumentCompletions returns [] for /tick list <nothing>", as
   assert.deepEqual(completions, []);
 });
 
-test("extension: /tick with no subcommand shows usage info notification", async () => {
+test("extension: recent picker gives non-TUI sessions an actionable fallback", async () => {
   const ext = await loadExtension();
   const fake = makeFakePi();
   ext.default(fake as any);
   const cmd = fake.commands.get("tick")!;
-  const { ctx, notifies } = makeCtx();
-  await cmd.handler!("", ctx);
-  assert.ok(notifies.length > 0);
-  assert.match(notifies[0].msg, /Usage/);
+  const view = makeCtx({ mode: "rpc" });
+  await cmd.handler!("", view.ctx);
+  assert.equal(view.customCalls, 0);
+  assert.match(view.notifies[0].msg, /use \/tick log instead/);
 });
 
 test("extension: /tick with unknown subcommand notifies error", async () => {

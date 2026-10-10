@@ -32,7 +32,7 @@ export const TRANSCRIPT_PRUNE_THROTTLE_MS = 60 * 60 * 1000;
 // (falling back for --grace-ms) read from here — previously each kept its
 // own copy and three of the four in tick-core had silently gone dead.
 export const RUNTIME_DEFAULTS = {
-  timeoutMs: 30 * 60 * 1000,   // wall-clock cap; SIGTERM then SIGKILL
+  timeoutMs: 0,                // wall-clock cap; 0 = disabled
   idleTimeoutMs: 0,            // no-stdout/no-stderr cap; 0 = off
   maxOutputBytes: 0,           // transcript cap; 0 = disabled
   killGraceMs: 5000,           // delay between SIGTERM and SIGKILL
