@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--timeout-ms 0` explicitly disables the wall-clock timer. Existing jobs
   retain any explicit stored limits until changed.
 
+## [0.1.3] - 2026-10-02
+
+### Added
+- One-shot (`once`) schedules with absolute, minute-precision ISO-8601 timestamps.
+- Atomic at-most-once claiming for externally triggered one-shot jobs.
+
+Thanks to @vicgarcia for the original implementation.
+
 ## [0.1.2] - 2026-07-22
 
 ### Changed
